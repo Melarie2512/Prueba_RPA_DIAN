@@ -1,0 +1,8 @@
+# Entorno virtual y caches de Python
+.venv/
+__pycache__/
+*.pyc
+
+# Datos generados: PDFs, imagenes, CSV, metricas y logs (nunca se versionan)
+data/*
+!data/.gitkeep
