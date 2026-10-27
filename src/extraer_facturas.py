@@ -26,6 +26,13 @@ Como se ejecuta
     # PATH, definir la variable de entorno TESSERACT_CMD con la ruta a tesseract.exe
     python src/extraer_facturas.py
 
+Variables de entorno
+--------------------
+    PDF_PASSWORD   contrasena de apertura de los PDF cifrados (la DIAN los protege con
+                   el numero de documento del adquiriente). Admite varias separadas por
+                   coma. Nunca se escribe en el codigo ni en config.json.
+    TESSERACT_CMD  ruta a tesseract.exe, solo si se usa OCR y no esta en el PATH.
+
 Codigo de salida
 ----------------
     0 -> todos los PDF se procesaron.
@@ -71,9 +78,11 @@ CLAVES_COLUMNAS = {
 
 # Expresiones regulares del encabezado. Se aplican sobre texto normalizado (sin tildes,
 # insensible a mayusculas), asi "Emisión" y "EMISION" se tratan igual.
+# El numero debe contener al menos un digito (lookahead): sin esa condicion, el titulo
+# "FACTURA ELECTRONICA DE VENTA" seguido de "Representacion Grafica" se tomaba como numero.
 RE_NUMERO = re.compile(
     r"(?:numero\s+de\s+factura|factura\s+electronica\s+de\s+venta(?:\s*(?:no\.?|n[°º]|#))?"
-    r"|no\.?\s*factura)\s*[:#]?\s*([A-Z0-9][A-Z0-9\-]{2,})",
+    r"|no\.?\s*factura)\s*[:#]?\s*(?=[A-Z\-]*\d)([A-Z0-9][A-Z0-9\-]{2,})",
     re.IGNORECASE,
 )
 RE_FECHA = re.compile(
@@ -227,29 +236,55 @@ def mapear_columnas(encabezado: list) -> dict:
     return mapa
 
 
+def texto_celda(pagina: fitz.Page, bbox) -> str:
+    """
+    Devuelve el texto de una celda conservando los espacios al final de cada linea.
+    La DIAN parte la descripcion a un ancho fijo; cuando el corte cae en un espacio,
+    ese espacio queda al final de la linea y Table.extract() lo recorta, pegando
+    palabras ("OBSTETRICA" + "CON" -> "OBSTETRICACON"). Leyendo los caracteres de la
+    celda (rawdict) el espacio se conserva y las lineas se unen sin agregar nada.
+    """
+    lineas = []
+    for bloque in pagina.get_text("rawdict", clip=fitz.Rect(bbox))["blocks"]:
+        for linea in bloque.get("lines", []):
+            lineas.append("".join(c["c"] for s in linea["spans"] for c in s["chars"]))
+    return " ".join("".join(lineas).split())  # normaliza espacios dobles
+
+
 def productos_desde_tablas(pdf: fitz.Document) -> list[dict]:
     """
     Lee la tabla de productos desde la estructura del PDF (PyMuPDF find_tables).
-    Se queda con las tablas cuyo encabezado tenga al menos descripcion y cantidad.
+    Se queda con las tablas que tengan una fila de titulos con al menos descripcion y
+    cantidad. Esa fila no siempre es la primera: en la factura DIAN encima va una fila
+    agrupadora ("IMPUESTOS"), por eso se busca entre las primeras filas.
     """
     productos = []
     for pagina in pdf:
         for tabla in pagina.find_tables().tables:
             filas = tabla.extract()
-            if not filas:
-                continue
-            mapa = mapear_columnas(filas[0])
-            if not {"descripcion", "cantidad"} <= mapa.keys():
+            mapa, inicio = {}, None
+            for i, fila in enumerate(filas[:3]):
+                mapa = mapear_columnas(fila)
+                if {"descripcion", "cantidad"} <= mapa.keys():
+                    inicio = i + 1  # los productos empiezan despues de los titulos
+                    break
+            if inicio is None:
                 continue  # no es la tabla de productos
-            for fila in filas[1:]:
+            for n_fila in range(inicio, len(filas)):
+                fila = filas[n_fila]
+
                 def celda(campo):
+                    """Texto de la celda del campo; None si no existe o esta vacia (cuenta como faltante)."""
                     i = mapa.get(campo)
-                    return (fila[i] or "").strip() if i is not None and i < len(fila) else None
+                    return ((fila[i] or "").strip() or None) if i is not None and i < len(fila) else None
                 if not celda("descripcion"):
                     continue  # renglon vacio o de subtotal
+                # La descripcion se relee desde la pagina para no perder espacios (ver texto_celda).
+                bbox_desc = tabla.rows[n_fila].cells[mapa["descripcion"]]
                 productos.append({
                     "codigo": celda("codigo"),
-                    "descripcion": " ".join(celda("descripcion").split()),
+                    "descripcion": texto_celda(pagina, bbox_desc) if bbox_desc
+                                   else celda("descripcion").replace("\n", ""),
                     "cantidad": a_numero(celda("cantidad")),
                     "precio_unitario": a_numero(celda("precio_unitario")),
                 })
@@ -293,6 +328,13 @@ def procesar_pdf(ruta_pdf: Path, cfg: dict) -> tuple[pd.DataFrame, dict]:
     t0 = time.monotonic()
 
     with fitz.open(ruta_pdf) as pdf:
+        # Etapa 0: abrir PDF cifrado probando las contrasenas de PDF_PASSWORD.
+        # authenticate devuelve 0 si la contrasena no sirve.
+        if pdf.is_encrypted:
+            claves = [c.strip() for c in os.getenv("PDF_PASSWORD", "").split(",")]
+            if not any(pdf.authenticate(c) for c in claves):
+                raise RuntimeError("PDF cifrado: ninguna contrasena de PDF_PASSWORD lo abre")
+
         # Etapa 1: imagenes
         imagenes = exportar_imagenes(pdf, ruta_pdf.stem, RAIZ / rutas["imagenes"],
                                      cfg["extraccion"]["dpi"])

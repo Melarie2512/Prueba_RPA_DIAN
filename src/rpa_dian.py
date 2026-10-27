@@ -207,9 +207,19 @@ def main() -> int:
     inicio_lote = time.monotonic()
 
     with sync_playwright() as pw:
-        # Ventana visible: el operador debe poder ver y validar el captcha si se lo piden.
-        navegador = pw.chromium.launch(headless=False)
-        contexto = navegador.new_context(accept_downloads=True, locale="es-CO")
+        # Ventana visible y maximizada: el operador debe poder ver y validar el captcha.
+        # no_viewport=True hace que la pagina use el tamano real de la ventana; con el
+        # viewport fijo por defecto (1280x720) la casilla de Turnstile, que la DIAN ubica
+        # en la esquina inferior derecha, queda fuera de pantallas pequenas.
+        # El navegador se elige en config.json (rpa.navegador):
+        #   "chrome" / "msedge" -> navegador instalado en el equipo (motor Chromium)
+        #   "firefox"           -> Firefox de Playwright (requiere: playwright install firefox)
+        nav = cfg["rpa"].get("navegador", "chrome")
+        if nav == "firefox":
+            navegador = pw.firefox.launch(headless=False)
+        else:
+            navegador = pw.chromium.launch(headless=False, channel=nav, args=["--start-maximized"])
+        contexto = navegador.new_context(accept_downloads=True, locale="es-CO", no_viewport=True)
         page = contexto.new_page()
 
         for n, cufe in enumerate(cfg["cufes"], start=1):

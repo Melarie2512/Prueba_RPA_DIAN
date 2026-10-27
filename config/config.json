@@ -26,6 +26,7 @@
   },
 
   "rpa": {
+    "navegador": "chrome",
     "reintentos_por_cufe": 3,
     "timeout_captcha_seg": 120,
     "timeout_descarga_seg": 60,
