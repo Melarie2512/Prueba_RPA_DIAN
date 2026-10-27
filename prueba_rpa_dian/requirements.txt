@@ -1,0 +1,6 @@
+# Dependencias con version fija (probadas para Python 3.12).
+playwright==1.49.1     # automatizacion del navegador (RPA)
+pandas==2.2.3          # DataFrames y exportacion a CSV
+PyMuPDF==1.25.1        # PDF -> imagen, texto nativo y deteccion de tablas
+pytesseract==0.3.13    # envoltorio del motor OCR Tesseract
+pillow==11.0.0         # lectura de imagenes para el OCR
